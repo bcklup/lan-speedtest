@@ -21,7 +21,7 @@ BACKEND_PID=$!
 cd "$ORIGINAL_DIR"
 
 # Start frontend
-cd frontend && npm run dev &
+cd frontend && npm run run &
 FRONTEND_PID=$!
 
 # Wait for both processes

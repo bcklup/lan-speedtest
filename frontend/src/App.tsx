@@ -13,7 +13,6 @@ function App() {
   const [unit, setUnit] = useState<SpeedUnit>("bits");
   const [duration, setDuration] = useState<TestDuration>(10);
   const [progress, setProgress] = useState(0);
-  const [elapsedTime, setElapsedTime] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const progressInterval = useRef<Timer | null>(null);
 
@@ -32,7 +31,7 @@ function App() {
           clearInterval(progressInterval.current);
         }
         setProgress(100);
-        setElapsedTime(0);
+        wsRef.current?.close();
       }
     };
 
@@ -48,7 +47,6 @@ function App() {
     setCurrentSpeed(null);
     setAverageSpeed(null);
     setProgress(0);
-    setElapsedTime(0);
     setIsRunning(true);
     wsRef.current?.send(JSON.stringify({ type: "start", duration }));
 
@@ -58,11 +56,9 @@ function App() {
     }
 
     progressInterval.current = setInterval(() => {
-      setElapsedTime((prev) => {
-        const newElapsed = prev + 0.1;
-        const newProgress = Math.min((newElapsed / duration) * 100, 100);
-        setProgress(newProgress);
-        return newElapsed;
+      setProgress((prev) => {
+        const newProgress = Math.min(prev + 100 / (duration * 10), 100);
+        return newProgress;
       });
     }, 100);
   };
@@ -105,14 +101,24 @@ function App() {
     // Convert to appropriate unit (bits or bytes)
     let value = speed;
     if (unit === "bytes") {
-      value = speed / 8;
+      value = speed / 8; // Convert from bits to bytes
     }
 
     // Format with appropriate prefix (M for mega, G for giga)
     if (value >= 1000) {
-      return `${(value / 1000).toFixed(1)}`;
+      return `${(value / 1000).toFixed(2)}`;
     }
     return `${Math.floor(value)}`;
+  };
+
+  const getUnitText = (speed: number | null) => {
+    if (speed === null) return unit === "bits" ? "Mbps" : "MB/s";
+
+    if (unit === "bits") {
+      return speed >= 1000 ? "Gbps" : "Mbps";
+    } else {
+      return speed >= 8000 ? "GB/s" : "MB/s";
+    }
   };
 
   return (
@@ -126,7 +132,7 @@ function App() {
           // Initial state - START button
           <button
             onClick={startTest}
-            className="text-[180px] font-bold text-[#373b4d] leading-none tracking-tight hover:text-[#7c9a92] transition-colors cursor-pointer"
+            className="text-[120px] font-bold text-[#373b4d] leading-none tracking-tight hover:text-[#7c9a92] transition-colors cursor-pointer md:text-[180px]"
           >
             START
           </button>
@@ -135,7 +141,7 @@ function App() {
           <div className="flex flex-col items-center gap-12">
             <div className="flex items-baseline justify-center gap-6 min-w-[600px]">
               <div
-                className="text-[180px] text-[#373b4d] font-bold leading-none tracking-tight text-center"
+                className="text-[120px] text-[#373b4d] font-bold leading-none tracking-tight text-center md:text-[180px]"
                 style={{ opacity: isRunning ? 0.3 : 1 }}
               >
                 {formatSpeed(isRunning ? currentSpeed : averageSpeed)}
@@ -145,14 +151,14 @@ function App() {
                 onClick={toggleUnit}
                 className="text-3xl font-medium text-[#7c9a92] hover:text-[#6b8a82] transition-colors cursor-pointer"
               >
-                {unit === "bits" ? "MBPS" : "MB/s"}
+                {getUnitText(isRunning ? currentSpeed : averageSpeed)}
               </button>
             </div>
 
             {isRunning && (
               <>
-                <div className="w-[600px]">
-                  <div className="w-full bg-[#e8f0eb] rounded-full h-1">
+                <div className="w-full max-w-[360px] px-4 md:max-w-[600px]">
+                  <div className="w-full bg-[#e8f0eb] rounded-full h-1 px-2">
                     <div
                       className="bg-[#7c9a92] h-1 rounded-full transition-all duration-300"
                       style={{ width: `${progress}%` }}

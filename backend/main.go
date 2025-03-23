@@ -1,10 +1,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"io"
 	"log"
-	"math"
-	"math/rand"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -16,13 +17,13 @@ var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins in development
+		return true
 	},
 }
 
 type SpeedTestMessage struct {
 	Type     string  `json:"type"`
-	Speed    float64 `json:"speed,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`    // Speed in Mbps
 	Average  float64 `json:"average,omitempty"`
 	Duration int     `json:"duration,omitempty"`
 }
@@ -34,9 +35,11 @@ type SpeedTest struct {
 	startTime time.Time
 }
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
+const (
+	chunkSize    = 1024 * 1024  // 1MB chunks for testing
+	testPort     = ":3001"      // Port for speed test TCP server
+	warmupPeriod = time.Second   // Initial warmup period
+)
 
 func (st *SpeedTest) start() {
 	st.mu.Lock()
@@ -73,6 +76,128 @@ func (st *SpeedTest) getAverage() float64 {
 	return sum / float64(len(st.speeds))
 }
 
+// generateTestData creates a buffer of random data for testing
+func generateTestData() []byte {
+	data := make([]byte, chunkSize)
+	if _, err := rand.Read(data); err != nil {
+		log.Printf("Error generating test data: %v", err)
+		return nil
+	}
+	return data
+}
+
+// measureSpeed calculates speed in Mbps
+func measureSpeed(bytes int64, duration time.Duration) float64 {
+	bits := float64(bytes * 8)
+	seconds := duration.Seconds()
+	if seconds == 0 {
+		return 0
+	}
+	return (bits / 1000000) / seconds // Convert to Mbps
+}
+
+// runDownloadTest measures download speed
+func runDownloadTest() (float64, error) {
+	// Create a new connection for each test
+	conn, err := net.Dial("tcp", "localhost"+testPort)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+
+	start := time.Now()
+	buffer := make([]byte, chunkSize)
+	totalBytes := int64(0)
+
+	// Read data until we get EOF or an error
+	for {
+		n, err := conn.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return 0, err
+		}
+		totalBytes += int64(n)
+	}
+
+	speed := measureSpeed(totalBytes, time.Since(start))
+	return speed, nil
+}
+
+// startSpeedTestServer starts a TCP server for speed testing
+func startSpeedTestServer() {
+	listener, err := net.Listen("tcp", testPort)
+	if err != nil {
+		log.Fatalf("Failed to start TCP server: %v", err)
+	}
+	defer listener.Close()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Printf("Failed to accept connection: %v", err)
+			continue
+		}
+		go handleSpeedTestConn(conn)
+	}
+}
+
+func handleSpeedTestConn(conn net.Conn) {
+	defer conn.Close()
+
+	// Generate and send test data
+	testData := generateTestData()
+	if testData == nil {
+		return
+	}
+
+	// Send data for download test
+	if _, err := conn.Write(testData); err != nil {
+		log.Printf("Error sending test data: %v", err)
+		return
+	}
+}
+
+func runSpeedTest(conn *websocket.Conn, speedTest *SpeedTest, duration int) {
+	// Run tests for the specified duration
+	endTime := time.Now().Add(time.Duration(duration) * time.Second)
+	for time.Now().Before(endTime) && speedTest.active {
+		// Run download test
+		speed, err := runDownloadTest()
+		if err != nil {
+			log.Printf("Download test error: %v", err)
+			break
+		}
+
+		speedTest.addSpeed(speed)
+
+		msg := SpeedTestMessage{
+			Type:  "speed",
+			Speed: speed,
+		}
+
+		if err := conn.WriteJSON(msg); err != nil {
+			log.Printf("Write error: %v", err)
+			break
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	// Send final average if test completed successfully
+	if speedTest.active {
+		speedTest.stop()
+		finalMsg := SpeedTestMessage{
+			Type:    "final",
+			Average: speedTest.getAverage(),
+		}
+		if err := conn.WriteJSON(finalMsg); err != nil {
+			log.Printf("Write error: %v", err)
+		}
+	}
+}
+
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -101,63 +226,21 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				speedTest.start()
 				duration := msg.Duration
 				if duration == 0 {
-					duration = 10 // default to 10 seconds if not specified
+					duration = 10
 				}
 				go runSpeedTest(conn, speedTest, duration)
 			} else if msg.Type == "stop" {
 				speedTest.stop()
-				// Send final average
-				finalMsg := SpeedTestMessage{
-					Type:    "final",
-					Average: speedTest.getAverage(),
-				}
-				if err := conn.WriteJSON(finalMsg); err != nil {
-					log.Printf("Write error: %v", err)
-					break
-				}
 			}
 		}
 	}
 }
 
-func runSpeedTest(conn *websocket.Conn, speedTest *SpeedTest, duration int) {
-	// Simulate speed test for the specified duration
-	for i := 0; i < duration; i++ {
-		if !speedTest.active {
-			break
-		}
-
-		// Simulate random speed between 100-1000 Mbps (typical LAN speeds)
-		speed := 100.0 + math.Floor(rand.Float64()*900.0)
-		speedTest.addSpeed(speed)
-
-		msg := SpeedTestMessage{
-			Type:  "speed",
-			Speed: speed,
-		}
-
-		if err := conn.WriteJSON(msg); err != nil {
-			log.Printf("Write error: %v", err)
-			break
-		}
-
-		time.Sleep(time.Second)
-	}
-
-	// If test completed successfully, send final message
-	if speedTest.active {
-		speedTest.stop()
-		finalMsg := SpeedTestMessage{
-			Type:    "final",
-			Average: speedTest.getAverage(),
-		}
-		if err := conn.WriteJSON(finalMsg); err != nil {
-			log.Printf("Write error: %v", err)
-		}
-	}
-}
-
 func main() {
+	// Start the TCP speed test server in a goroutine
+	go startSpeedTestServer()
+
+	// Start the WebSocket server
 	http.HandleFunc("/ws", handleWebSocket)
 	log.Println("Starting speed test server on :8080")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
