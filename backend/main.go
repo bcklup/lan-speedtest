@@ -21,15 +21,16 @@ var upgrader = websocket.Upgrader{
 }
 
 type SpeedTestMessage struct {
-	Type    string  `json:"type"`
-	Speed   float64 `json:"speed,omitempty"`
-	Average float64 `json:"average,omitempty"`
+	Type     string  `json:"type"`
+	Speed    float64 `json:"speed,omitempty"`
+	Average  float64 `json:"average,omitempty"`
+	Duration int     `json:"duration,omitempty"`
 }
 
 type SpeedTest struct {
-	mu       sync.Mutex
-	active   bool
-	speeds   []float64
+	mu        sync.Mutex
+	active    bool
+	speeds    []float64
 	startTime time.Time
 }
 
@@ -98,7 +99,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			if msg.Type == "start" {
 				speedTest.start()
-				go runSpeedTest(conn, speedTest)
+				duration := msg.Duration
+				if duration == 0 {
+					duration = 10 // default to 10 seconds if not specified
+				}
+				go runSpeedTest(conn, speedTest, duration)
 			} else if msg.Type == "stop" {
 				speedTest.stop()
 				// Send final average
@@ -115,10 +120,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func runSpeedTest(conn *websocket.Conn, speedTest *SpeedTest) {
-	// Simulate speed test for 20 seconds
-	// In a real implementation, you would measure actual network speed
-	for i := 0; i < 20; i++ {
+func runSpeedTest(conn *websocket.Conn, speedTest *SpeedTest, duration int) {
+	// Simulate speed test for the specified duration
+	for i := 0; i < duration; i++ {
 		if !speedTest.active {
 			break
 		}
