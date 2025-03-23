@@ -17,7 +17,9 @@ function App() {
   const progressInterval = useRef<Timer | null>(null);
 
   useEffect(() => {
-    wsRef.current = new WebSocket("ws://localhost:8080/ws");
+    // Get the hostname from the current window location
+    const hostname = window.location.hostname;
+    wsRef.current = new WebSocket(`ws://${hostname}:8080/ws`);
 
     wsRef.current.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -123,7 +125,7 @@ function App() {
 
   return (
     <div className="min-h-screen w-full bg-[#f5f2e8] flex flex-col items-center justify-center p-4">
-      <div className="max-w-2xl w-full text-center flex flex-col items-center">
+      <div className="max-w-2xl w-full text-center flex flex-col items-center bg-[#f5f2e8]">
         <h1 className="text-3xl font-medium text-[#373b4d] mb-6">
           LAN SPEED TEST
         </h1>
