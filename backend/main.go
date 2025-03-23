@@ -139,7 +139,7 @@ func runSpeedTest(conn *websocket.Conn, speedTest *SpeedTest, duration int) {
 				return
 			}
 
-			time.Sleep(time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 

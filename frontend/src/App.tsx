@@ -89,10 +89,10 @@ function App() {
 
       progressInterval.current = setInterval(() => {
         setProgress((prev) => {
-          const newProgress = Math.min(prev + 100 / (duration * 10), 100);
+          const newProgress = Math.min(prev + 100 / (duration * 20), 100);
           return newProgress;
         });
-      }, 100);
+      }, 50);
     } catch (error) {
       console.error("Failed to start test:", error);
       setIsRunning(false);
