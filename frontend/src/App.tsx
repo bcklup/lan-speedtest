@@ -15,27 +15,45 @@ function App() {
   const [progress, setProgress] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const progressInterval = useRef<Timer | null>(null);
+  const speeds = useRef<number[]>([]);
+  const pendingStart = useRef(false);
+
+  const connectWebSocket = () => {
+    return new Promise<void>((resolve) => {
+      // Close existing connection if any
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+
+      // Get the hostname from the current window location
+      const hostname = window.location.hostname;
+      wsRef.current = new WebSocket(`ws://${hostname}:8080/ws`);
+
+      wsRef.current.onopen = () => {
+        resolve();
+      };
+
+      wsRef.current.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "speed") {
+          setCurrentSpeed(data.speed);
+          speeds.current.push(data.speed);
+        } else if (data.type === "final") {
+          setAverageSpeed(data.average);
+          setIsRunning(false);
+          if (progressInterval.current) {
+            clearInterval(progressInterval.current);
+          }
+          setProgress(100);
+          wsRef.current?.close();
+        }
+      };
+    });
+  };
 
   useEffect(() => {
-    // Get the hostname from the current window location
-    const hostname = window.location.hostname;
-    wsRef.current = new WebSocket(`ws://${hostname}:8080/ws`);
-
-    wsRef.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "speed") {
-        setCurrentSpeed(data.speed);
-      } else if (data.type === "final") {
-        setAverageSpeed(data.average);
-        setIsRunning(false);
-        if (progressInterval.current) {
-          clearInterval(progressInterval.current);
-        }
-        setProgress(100);
-        wsRef.current?.close();
-      }
-    };
+    connectWebSocket();
 
     return () => {
       if (progressInterval.current) {
@@ -45,24 +63,42 @@ function App() {
     };
   }, [duration]);
 
-  const startTest = () => {
+  const startTest = async () => {
+    if (pendingStart.current) return;
+    pendingStart.current = true;
+
     setCurrentSpeed(null);
     setAverageSpeed(null);
     setProgress(0);
+    speeds.current = [];
     setIsRunning(true);
-    wsRef.current?.send(JSON.stringify({ type: "start", duration }));
 
-    // Start progress tracking
-    if (progressInterval.current) {
-      clearInterval(progressInterval.current);
+    try {
+      // Ensure we have a WebSocket connection
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        await connectWebSocket();
+      }
+
+      // Send start message
+      wsRef.current?.send(JSON.stringify({ type: "start", duration }));
+
+      // Start progress tracking
+      if (progressInterval.current) {
+        clearInterval(progressInterval.current);
+      }
+
+      progressInterval.current = setInterval(() => {
+        setProgress((prev) => {
+          const newProgress = Math.min(prev + 100 / (duration * 10), 100);
+          return newProgress;
+        });
+      }, 100);
+    } catch (error) {
+      console.error("Failed to start test:", error);
+      setIsRunning(false);
+    } finally {
+      pendingStart.current = false;
     }
-
-    progressInterval.current = setInterval(() => {
-      setProgress((prev) => {
-        const newProgress = Math.min(prev + 100 / (duration * 10), 100);
-        return newProgress;
-      });
-    }, 100);
   };
 
   const stopTest = () => {
@@ -70,6 +106,7 @@ function App() {
       clearInterval(progressInterval.current);
     }
     wsRef.current?.send(JSON.stringify({ type: "stop" }));
+    setIsRunning(false);
   };
 
   const restartTest = () => {
