@@ -2,12 +2,13 @@ import { useState, useEffect, useRef } from "react";
 
 type SpeedUnit = "bits" | "bytes";
 type TestDuration = 5 | 10 | 15 | 25;
+type TestState = "idle" | "connecting" | "running" | "complete";
 
 // Add Timer type to fix NodeJS namespace error
 type Timer = ReturnType<typeof setInterval>;
 
 function App() {
-  const [isRunning, setIsRunning] = useState(false);
+  const [testState, setTestState] = useState<TestState>("idle");
   const [currentSpeed, setCurrentSpeed] = useState<number | null>(null);
   const [averageSpeed, setAverageSpeed] = useState<number | null>(null);
   const [unit, setUnit] = useState<SpeedUnit>("bits");
@@ -17,9 +18,10 @@ function App() {
   const progressInterval = useRef<Timer | null>(null);
   const speeds = useRef<number[]>([]);
   const pendingStart = useRef(false);
+  const isConnected = useRef(false);
 
   const connectWebSocket = () => {
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       // Close existing connection if any
       if (wsRef.current) {
         wsRef.current.close();
@@ -30,7 +32,20 @@ function App() {
       wsRef.current = new WebSocket(`ws://${hostname}:8080/ws`);
 
       wsRef.current.onopen = () => {
+        isConnected.current = true;
         resolve();
+      };
+
+      wsRef.current.onclose = () => {
+        isConnected.current = false;
+        if (testState === "connecting" || testState === "running") {
+          setTestState("idle");
+        }
+      };
+
+      wsRef.current.onerror = (error) => {
+        isConnected.current = false;
+        reject(error);
       };
 
       wsRef.current.onmessage = (event) => {
@@ -41,7 +56,7 @@ function App() {
           speeds.current.push(data.speed);
         } else if (data.type === "final") {
           setAverageSpeed(data.average);
-          setIsRunning(false);
+          setTestState("complete");
           if (progressInterval.current) {
             clearInterval(progressInterval.current);
           }
@@ -53,7 +68,10 @@ function App() {
   };
 
   useEffect(() => {
-    connectWebSocket();
+    connectWebSocket().catch((error) => {
+      console.error("WebSocket connection error:", error);
+      setTestState("idle");
+    });
 
     return () => {
       if (progressInterval.current) {
@@ -71,16 +89,24 @@ function App() {
     setAverageSpeed(null);
     setProgress(0);
     speeds.current = [];
-    setIsRunning(true);
+    setTestState("connecting");
 
     try {
       // Ensure we have a WebSocket connection
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      if (
+        !isConnected.current ||
+        !wsRef.current ||
+        wsRef.current.readyState !== WebSocket.OPEN
+      ) {
         await connectWebSocket();
       }
 
+      // Wait a small delay to ensure connection is fully established
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Send start message
       wsRef.current?.send(JSON.stringify({ type: "start", duration }));
+      setTestState("running");
 
       // Start progress tracking
       if (progressInterval.current) {
@@ -95,7 +121,7 @@ function App() {
       }, 50);
     } catch (error) {
       console.error("Failed to start test:", error);
-      setIsRunning(false);
+      setTestState("idle");
     } finally {
       pendingStart.current = false;
     }
@@ -105,8 +131,10 @@ function App() {
     if (progressInterval.current) {
       clearInterval(progressInterval.current);
     }
-    wsRef.current?.send(JSON.stringify({ type: "stop" }));
-    setIsRunning(false);
+    if (isConnected.current && wsRef.current) {
+      wsRef.current.send(JSON.stringify({ type: "stop" }));
+    }
+    setTestState("idle");
   };
 
   const restartTest = () => {
@@ -167,7 +195,7 @@ function App() {
           LAN SPEED TEST
         </h1>
 
-        {!isRunning && !averageSpeed ? (
+        {testState === "idle" ? (
           // Initial state - START button
           <button
             onClick={startTest}
@@ -175,26 +203,40 @@ function App() {
           >
             START
           </button>
+        ) : testState === "connecting" ? (
+          // Connecting state
+          <div className="flex flex-col items-center gap-12">
+            <div className="text-[120px] text-[#373b4d] font-bold leading-none tracking-tight text-center md:text-[180px]">
+              ...
+            </div>
+            <div className="text-lg font-medium text-[#7c9a92]">
+              Connecting...
+            </div>
+          </div>
         ) : (
           // Testing or Results state
           <div className="flex flex-col items-center gap-12">
             <div className="flex items-baseline justify-center gap-6 min-w-[600px]">
               <div
                 className="text-[120px] text-[#373b4d] font-bold leading-none tracking-tight text-center md:text-[180px]"
-                style={{ opacity: isRunning ? 0.3 : 1 }}
+                style={{ opacity: testState === "running" ? 0.3 : 1 }}
               >
-                {formatSpeed(isRunning ? currentSpeed : averageSpeed)}
+                {formatSpeed(
+                  testState === "running" ? currentSpeed : averageSpeed
+                )}
               </div>
 
               <button
                 onClick={toggleUnit}
                 className="text-3xl font-medium text-[#7c9a92] hover:text-[#6b8a82] transition-colors cursor-pointer"
               >
-                {getUnitText(isRunning ? currentSpeed : averageSpeed)}
+                {getUnitText(
+                  testState === "running" ? currentSpeed : averageSpeed
+                )}
               </button>
             </div>
 
-            {isRunning && (
+            {testState === "running" && (
               <>
                 <div className="w-full max-w-[360px] px-4 md:max-w-[600px]">
                   <div className="w-full bg-[#e8f0eb] rounded-full h-1 px-2">
@@ -227,7 +269,7 @@ function App() {
               </>
             )}
 
-            {!isRunning && averageSpeed && (
+            {testState === "complete" && (
               <button
                 onClick={restartTest}
                 className="w-12 h-12 rounded-full border-2 border-[#7c9a92] flex items-center justify-center hover:bg-[#7c9a92] hover:text-white transition-colors group cursor-pointer"
